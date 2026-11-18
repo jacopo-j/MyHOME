@@ -42,10 +42,12 @@ from OWNd.message import (
     OWNLightingEvent,
 )
 
+from .actuator_monitor import actuator_monitor_registry_address, configured_relay_monitor
 from .const import (
     BUS_ROUTING,
     COARSE_PRESET_TO_PERCENT,
     CONF_COLOR_TEMP,
+    CONF_DEVICE_CLASS,
     CONF_DEVICE_MODEL,
     CONF_DIMMABLE,
     CONF_ENTITY_NAME,
@@ -179,9 +181,10 @@ async def async_setup_entry(
                 "color_temp": cfg.get(CONF_COLOR_TEMP, False),
                 "rgb": cfg.get(CONF_RGB, False) or cfg.get(CONF_HS, False),
             }
+        monitor = configured_relay_monitor(runtime.platforms.get("binary_sensor", {}), ctx.address)
         return MyHOMELight(
             hass=hass,
-            name=cfg.get(CONF_NAME, f"Light {ctx.suffix}"),
+            name=cfg.get(CONF_NAME, monitor.get(CONF_NAME, f"Light {ctx.suffix}")),
             entity_name=cfg.get(CONF_ENTITY_NAME),
             icon=cfg.get(CONF_ICON),
             icon_on=cfg.get(CONF_ICON_ON),
@@ -311,6 +314,8 @@ class _ForeignAddresses:
             for dev_id, cfg in runtime.platforms.get(platform, {}).items():
                 if str(cfg.get(CONF_WHO, default_who)) != "1":
                     continue
+                if platform == "binary_sensor" and (cfg.get(CONF_DEVICE_CLASS) or cfg.get("device_class")) == "power":
+                    continue  # a read-only observer can share the address of a light
                 address = Address.from_config(dev_id, cfg)
                 self._add_sensor(str(dev_id), address.where, address.clean_where)
 
@@ -326,6 +331,10 @@ class _ForeignAddresses:
             elif entry.domain in ("cover", "lock") and who == "1":
                 self._add_cover(device_id, Address.from_device_id(device_id))
             elif entry.domain in ("binary_sensor", "sensor"):
+                if entry.domain == "binary_sensor" and actuator_monitor_registry_address(
+                    entry.unique_id or "", gateway_mac, entry_mac
+                ) is not None:
+                    continue
                 if who == "1":
                     dev = device_id.split("-")[0]
                 elif "-motion" in entry.unique_id or "-illuminance" in entry.unique_id:

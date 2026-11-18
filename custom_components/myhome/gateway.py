@@ -775,9 +775,11 @@ class MyHOMEGatewayHandler(GatewayTopologyMixin, GatewayIdentityMixin):
                         if not wheres:
                             continue
                 all_zones = target.all_zone_request(dimension)
-                if all_zones is not None and any(BUS_ROUTING not in where for where in wheres):
+                # A request for every heating zone does not address a shared pump.
+                covered = [where for where in wheres if BUS_ROUTING not in where and not where.startswith("0#")]
+                if all_zones is not None and covered:
                     frames.append(all_zones)
-                    wheres = [where for where in wheres if BUS_ROUTING in where]  # behind an interface
+                    wheres = [where for where in wheres if where not in covered]
                 for where in wheres:
                     # One zone the builder rejects must not drop the others of the batch.
                     try:

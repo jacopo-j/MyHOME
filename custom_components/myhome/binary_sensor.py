@@ -39,6 +39,7 @@ from OWNd.message import (
     OWNLightingEvent,
 )
 
+from .actuator_monitor import actuator_monitor_discoveries, actuator_monitor_registry_address
 from .const import (
     BUS_ROUTING,
     CONF_DEVICE_CLASS,
@@ -57,6 +58,7 @@ from .const import (
 from .discovery import Address, DeviceContext, PlatformDiscovery, is_motion_end
 from .gateway import MyHOMEGatewayHandler
 from .myhome_device import MyHOMEEntity
+from .validate import is_who1_power_monitor
 
 PARALLEL_UPDATES = 0
 
@@ -216,6 +218,8 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
         return auxiliary
 
     # ── WHO 1: motion sensors ───────────────────────────────────────────
+    motion_configured = {key: cfg for key, cfg in configured.items() if not is_who1_power_monitor(cfg)}
+
     def build_motion(ctx: DeviceContext) -> MyHOMEMotionSensor:
         if ctx.source == "yaml":
             cfg, where, device_id = ctx.cfg, ctx.address.where, ctx.config_id or ctx.key
@@ -224,7 +228,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
             raw = ctx.address.where
             clean_raw = raw.split("-")[-1]
             norm_raw, clean_norm = normalize_where(raw), normalize_where(clean_raw)
-            cfg = _first_config(configured, f"1-{norm_raw}", f"1-{raw}", norm_raw, raw, clean_norm, clean_raw)
+            cfg = _first_config(motion_configured, f"1-{norm_raw}", f"1-{raw}", norm_raw, raw, clean_norm, clean_raw)
             where = str(cfg.get(CONF_WHERE, norm_raw or raw))
             device_id = norm_raw or clean_norm or clean_raw
             name = cfg.get(CONF_NAME, f"Motion Sensor {clean_norm or clean_raw}")
@@ -300,8 +304,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
         on_general=anonymous_sensor_reply, **common,  # type: ignore
     )
 
+    discoveries = [*ctx_discovery.values(), *actuator_monitor_discoveries(hass, config_entry, async_add_entities)]
     entities: list[Entity] = []
-    for discovery in ctx_discovery.values():
+    for discovery in discoveries:
         entities.extend(discovery.start(listen=False, add=False))
     if entities:
         async_add_entities(entities)
@@ -309,7 +314,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry, asyn
     @callback
     def _handle_binary_sensor_message(msg: typing.Any) -> None:
         """Forward incoming bus messages to binary sensor entities."""
-        for discovery in ctx_discovery.values():
+        for discovery in discoveries:
             discovery.handle_message(msg)
 
     config_entry.async_on_unload(
@@ -380,6 +385,8 @@ def classify_binary_sensor_registry_entry(
     dry contacts, then motion sensors.
     """
     unique_id = str(entry.unique_id or "")
+    if actuator_monitor_registry_address(unique_id, gateway_mac, entry_mac) is not None:
+        return None
     after_mac = unique_id.replace(f"{gateway_mac}-", "", 1).replace(f"{entry_mac}-", "", 1)
     if after_mac.startswith("9-") or "-9-" in unique_id:
         raw = after_mac.replace("9-", "", 1) if after_mac.startswith("9-") else after_mac

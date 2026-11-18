@@ -107,6 +107,7 @@ from .const import (
     CONF_MIN_POSITION_DELTA,
     CONF_ON_STATES,
     CONF_PERIODIC_SEND,
+    CONF_PHASE,
     CONF_PIN_CODE,
     CONF_PLATFORMS,
     CONF_PREWARN_LIGHT,
@@ -345,6 +346,9 @@ class MyHomeConfigSchema(Schema):
 
 
 class MyHomeDeviceSchema(Schema):
+    def _where_key(self, cfg: dict[str, typing.Any], routing: str) -> str:
+        return f"{cfg[CONF_WHO]}-{cfg[CONF_WHERE]}{routing}"
+
     def __call__(self, data):  # type: ignore
         explicit_kinematics = {
             str(device)
@@ -367,7 +371,7 @@ class MyHomeDeviceSchema(Schema):
             interface = data[device].get(CONF_BUS_INTERFACE)
             routing = f"{BUS_ROUTING}{interface}" if interface is not None else ""
             if CONF_WHERE in data[device]:
-                _rekeyed_data[f"{data[device][CONF_WHO]}-{data[device][CONF_WHERE]}{routing}"] = data[device]
+                _rekeyed_data[self._where_key(data[device], routing)] = data[device]
             elif CONF_ZONE in data[device]:
                 _new_key = f"{data[device][CONF_WHO]}-{data[device][CONF_ZONE]}{routing}"
                 data[device][CONF_ZONE] = f"#0#{data[device][CONF_ZONE]}" if data[device][CONF_CENTRAL] and data[device][CONF_ZONE] != "#0" else data[device][CONF_ZONE]
@@ -735,13 +739,82 @@ def _canonical_who1_point(device: dict[str, typing.Any]) -> dict[str, typing.Any
     return device
 
 
-binary_sensor_schema = MyHomeDeviceSchema(
+def validate_actuator_monitor_where(
+    who: str, where: str, interface: str | None = None
+) -> tuple[str, str | None]:
+    """Validate a configured power monitor address and split off F422 routing."""
+    base, routing, inline_interface = where.rpartition(BUS_ROUTING)
+    if routing and who in ("1", "4"):
+        embedded = BusInterface()(inline_interface)  # type: ignore[no-untyped-call]
+        if interface is not None and interface != embedded:
+            raise Invalid("Conflicting actuator monitor interfaces")
+        where, interface = base, embedded
+    if who == "1":
+        where = PointToPoint()(where)
+        if where == "00":
+            raise Invalid("A WHO 1 power monitor requires a point address")
+    elif who == "4":
+        if not re.fullmatch(r"#?[0-9]{1,2}(?:#[0-9])?", where) or where in ("0", "00"):
+            raise Invalid("A WHO 4 power monitor requires a zone, actuator or pump address")
+    elif (
+        interface is not None
+        or not re.fullmatch(r"7[0-9]{1,3}(?:#[0-9])?", where)
+        or not 1 <= int(where.split("#")[0][1:]) <= 255
+    ):
+        raise Invalid("A WHO 18 power monitor requires an energy actuator address without F422 routing")
+    return where, interface
+
+
+def _validate_binary_sensor(device: dict[str, typing.Any]) -> dict[str, typing.Any]:
+    who = device[CONF_WHO]
+    where = device[CONF_WHERE]
+    device_class = device.get(CONF_DEVICE_CLASS) or device.get("device_class")
+    if who in ("1", "4", "18") and device_class == BinarySensorDeviceClass.POWER:
+        where, interface = validate_actuator_monitor_where(who, where, device.get(CONF_BUS_INTERFACE))
+        if interface is not None:
+            device[CONF_BUS_INTERFACE] = interface
+        device[CONF_WHERE] = where
+        if CONF_PHASE in device:
+            if who != "18":
+                raise Invalid("phase applies only to WHO 18 power monitors")
+            if "#" in where and where.split("#")[1] != device[CONF_PHASE]:
+                raise Invalid("Conflicting WHO 18 actuator suffix and phase")
+        return device
+    if who in ("4", "18") or CONF_BUS_INTERFACE in device or CONF_PHASE in device:
+        raise Invalid("This address or field requires a power monitor")
+    SpecialWhere()(where)  # type: ignore[no-untyped-call]
+    return _canonical_who1_point(device)
+
+
+def is_who1_power_monitor(cfg: Mapping[str, typing.Any]) -> bool:
+    """Whether a binary sensor observes a lighting relay."""
+    return str(cfg.get(CONF_WHO)) == "1" and is_actuator_monitor(cfg)
+
+
+def is_actuator_monitor(cfg: Mapping[str, typing.Any]) -> bool:
+    """Whether a binary sensor configuration observes an actuator."""
+    return str(cfg.get(CONF_WHO)) in ("1", "4", "18") and (
+        cfg.get(CONF_DEVICE_CLASS) or cfg.get("device_class")
+    ) == BinarySensorDeviceClass.POWER
+
+
+class MyHomeBinarySensorSchema(MyHomeDeviceSchema):
+    def _where_key(self, cfg: dict[str, typing.Any], routing: str) -> str:
+        key = super()._where_key(cfg, routing)
+        return f"{key}-power" if is_who1_power_monitor(cfg) else key
+
+
+binary_sensor_schema = MyHomeBinarySensorSchema(
     {
         Required(str): All({
-            Optional(CONF_WHO, default="25"): All(Coerce(str), In(["1", "9", "25"])),
-            Required(CONF_WHERE): All(Coerce(str), SpecialWhere()),  # type: ignore
+            Optional(CONF_WHO, default="25"): All(Coerce(str), In(["1", "4", "9", "18", "25"])),
+            Required(CONF_WHERE): Coerce(str),
             Required(CONF_NAME): str,
             Optional(CONF_ENTITY_NAME): str,
+            Optional(CONF_ICON): str,
+            Optional(CONF_ICON_ON): str,
+            Optional(CONF_BUS_INTERFACE): All(Coerce(str), BusInterface()),  # type: ignore
+            Optional(CONF_PHASE): All(Coerce(str), Match(r"[0-9]\Z")),
             Optional(CONF_INVERTED, default=False): Boolean(),
             Optional(CONF_DEVICE_CLASS): In(
                 [
@@ -801,7 +874,7 @@ binary_sensor_schema = MyHomeDeviceSchema(
             ),
             Optional(CONF_MANUFACTURER, default="BTicino S.p.A."): str,
             Optional(CONF_DEVICE_MODEL): Coerce(str),
-        }, _canonical_who1_point)
+        }, _validate_binary_sensor)
     }
 )
 

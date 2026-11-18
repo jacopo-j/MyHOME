@@ -38,6 +38,38 @@ binary_sensor:
 
 ---
 
+## Read-only actuator monitoring in the personal fork
+
+Declare a power binary sensor under the gateway’s `binary_sensor` section in `myhome.yaml`. Each monitor shows the reported bus state. It can share an address with a light, switch, climate entity or energy meter.
+
+```yaml
+binary_sensor:
+  relay_state:
+    who: "1"
+    where: "12"
+    class: power
+    name: Relay state
+  valve_state:
+    who: "4"
+    where: "2#1"
+    class: power
+    name: Zone 2 valve 1
+  load_shed_state:
+    who: "18"
+    where: "71"
+    phase: "0"
+    class: power
+    name: F523 load shed
+```
+
+- **WHO 1** follows the relay’s on/off report. Append `#4#01` to the point address for a relay on F422 interface 01.
+- **WHO 4** uses dimension 20. `2#1` observes actuator 1 in zone 2. A bare zone such as `2` follows the last actuator report for that zone. `0#2` selects pump 2. The old `#0` entry also follows shared pump reports. Keep it for existing automations or select a specific pump once its address is known. Routed monitors receive reports even on gateways that refuse routed status requests.
+- **WHO 18** uses dimension 71. `phase` goes in the address, so the example queries `71#0`. A new YAML entry without a suffix uses `#0`. An explicit address such as `71#1` gives a second endpoint its own entity. Dimension 71 reports whether the load is disabled. With the default `inverted: false`, the monitor is **on when disabled**. Set `inverted: true` to report **on when enabled**.
+
+The optional `entity_name`, `icon`, `icon_on` and `inverted` fields carry over from the older fork. Existing entity IDs and device associations are restored from the registry. Keep the original F523 `where` and `phase` for the first upgrade. Home Assistant records the phase against the legacy entity so adding a phase or changing the address spelling can preserve its identity. Configure additional phases using explicit addresses. If the original phase is absent from the active configuration, its legacy entity stays `unknown`.
+
+---
+
 ## 🚪 Selecting Device Classes in the UI ("Show As")
 
 In legacy versions, specifying whether a contact was a door, garage door, or window required manual YAML `class:` keys. In v2, this is configured directly in Home Assistant's UI:

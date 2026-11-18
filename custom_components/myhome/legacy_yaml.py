@@ -15,6 +15,7 @@ from homeassistant.util.json import json_loads
 from homeassistant.util.yaml import loader as yaml_loader
 
 from . import validate
+from .actuator_monitor import preserve_f523_addresses
 from .const import (
     BUS_ROUTING,
     CONF_BUS_INTERFACE,
@@ -67,6 +68,8 @@ def _apply_yaml_platforms(
                 runtime_cfg = copy.deepcopy(d_cfg, memo)
                 configured_platforms[plat][d_id] = runtime_cfg
                 if isinstance(runtime_cfg, dict):
+                    if plat == "binary_sensor" and validate.is_actuator_monitor(runtime_cfg):
+                        continue  # Numeric WHEREs can belong to several different WHOs.
                     who, dash, clean_id = d_id.partition("-")
                     is_thermo_switch = (
                         plat == "switch" and str(runtime_cfg.get(CONF_WHO)) == "4"
@@ -190,6 +193,8 @@ def migrate_legacy_yaml_to_entry_options(
     previous = entry.options.get(CONF_MIGRATED_YAML_PLATFORMS)
     if snapshot == previous or (previous is None and not any(snapshot.values())):
         return False
+    if isinstance(previous, Mapping):
+        preserve_f523_addresses(hass, entry, previous)
     hass.config_entries.async_update_entry(
         entry, options={**entry.options, CONF_MIGRATED_YAML_PLATFORMS: snapshot}
     )
